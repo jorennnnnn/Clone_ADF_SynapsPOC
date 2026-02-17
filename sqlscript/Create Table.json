@@ -1,0 +1,17 @@
+{
+	"name": "Create Table",
+	"properties": {
+		"content": {
+			"query": "IF NOT EXISTS (SELECT * FROM sys.external_file_formats WHERE name = 'SynapseParquetFormat') \n\tCREATE EXTERNAL FILE FORMAT [SynapseParquetFormat] \n\tWITH ( FORMAT_TYPE = PARQUET)\nGO\n\nIF NOT EXISTS (SELECT * FROM sys.external_data_sources WHERE name = 'bronze') \n\tCREATE EXTERNAL DATA SOURCE [bronze] \n\tWITH (\n\t\tLOCATION = 'abfss://bronze@wearebisynapsestorage.dfs.core.windows.net' \n\t)\nGO\n\nIF EXISTS (SELECT * FROM sys.external_tables WHERE name = 'Customer' and schema_id = schema_id('bronze')) \n\tDROP EXTERNAL TABLE bronze.Customer\n\nCREATE EXTERNAL TABLE bronze.Customer (\n\t[CustomerKey] int,\n\t[GeoAreaKey] int,\n\t[StartDT] datetime2(7),\n\t[EndDT] datetime2(7),\n\t[Continent] nvarchar(4000),\n\t[Gender] nvarchar(4000),\n\t[Title] nvarchar(4000),\n\t[GivenName] nvarchar(4000),\n\t[MiddleInitial] nvarchar(4000),\n\t[Surname] nvarchar(4000),\n\t[StreetAddress] nvarchar(4000),\n\t[City] nvarchar(4000),\n\t[State] nvarchar(4000),\n\t[StateFull] nvarchar(4000),\n\t[ZipCode] nvarchar(4000),\n\t[Country] nvarchar(4000),\n\t[CountryFull] nvarchar(4000),\n\t[Birthday] datetime2(7),\n\t[Age] int,\n\t[Occupation] nvarchar(4000),\n\t[Company] nvarchar(4000),\n\t[Vehicle] nvarchar(4000),\n\t[Latitude] numeric(20,5),\n\t[Longitude] numeric(20,5),\n\t[row_hash] varbinary(8000),\n\t[bronze_watermark] datetime2(7),\n\t[loaddate] VARCHAR(8000),\n\t[IsDeleted] int\n\t)\n\tWITH (\n\tLOCATION = 'contoso/customer/**',\n\tDATA_SOURCE = [bronze],\n\tFILE_FORMAT = [SynapseParquetFormat]\n\t)\nGO\n\n",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "POC_test",
+				"poolName": "Built-in"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}
