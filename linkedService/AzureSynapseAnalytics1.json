@@ -1,0 +1,19 @@
+{
+	"name": "AzureSynapseAnalytics1",
+	"type": "Microsoft.Synapse/workspaces/linkedservices",
+	"properties": {
+		"annotations": [],
+		"type": "AzureSqlDW",
+		"typeProperties": {
+			"server": "synapsepocwearebi-ondemand.sql.azuresynapse.net",
+			"database": "POC_test",
+			"encrypt": "optional",
+			"trustServerCertificate": false,
+			"authenticationType": "SystemAssignedManagedIdentity"
+		},
+		"connectVia": {
+			"referenceName": "AutoResolveIntegrationRuntime",
+			"type": "IntegrationRuntimeReference"
+		}
+	}
+}

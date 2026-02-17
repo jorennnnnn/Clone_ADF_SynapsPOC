@@ -1,0 +1,17 @@
+{
+	"name": "Load from landing",
+	"properties": {
+		"content": {
+			"query": "SELECT \n    *\nFROM\nOPENROWSET(\n    BULK 'contoso/customer/loaddate=2026-02-16/*.parquet',\n    DATA_SOURCE = 'landingzone',\n    FORMAT = 'PARQUET'\n) AS rows;",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "POC_test",
+				"poolName": "Built-in"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}

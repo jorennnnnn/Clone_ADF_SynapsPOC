@@ -1,0 +1,17 @@
+{
+	"name": "Load to Bronze",
+	"properties": {
+		"content": {
+			"query": "DECLARE @LoadDate NVARCHAR(10) = CONVERT(NVARCHAR(10), GETDATE(), 120); --\n\nDECLARE @SourceConnectionName NVARCHAR(MAX) = 'contoso';\nDECLARE @TableName NVARCHAR(MAX) = '${TableName}';\nDECLARE @PrimaryKey NVARCHAR(MAX) = '${PrimaryKey}';\nDECLARE @Location NVARCHAR(MAX) = '/'+ @SourceConnectionName +'/'+ @TableName +'/loaddate=' + @LoadDate + '/';\nDECLARE @WatermarkTS DATETIME = '${WaterMarkTS}';\nDECLARE @columnList NVARCHAR(MAX) = '${ColumnList}';\nDECLARE @columnTypeList NVARCHAR(MAX) = '${ColumnList}';\n\nDECLARE @hashcompare NVARCHAR(MAX);\nDECLARE @Query NVARCHAR(MAX);\n\n-- Hashcompare is used to only ingest records with changes\n-- When the tables is first loaded the view contains no data and no compare is needed\nSET @hashcompare = \nCASE WHEN @WatermarkTS IS NULL \n  THEN '' \n  ELSE N' \nLEFT JOIN Bronze.vw_'+ @SourceConnectionName + '_' +  @TableName + ' AS bronze\n  ON hashed.['+@PrimaryKey+'] = bronze.['+@PrimaryKey+']\nWHERE\n     bronze.['+@PrimaryKey+'] IS NULL      -- new record\n  OR hashed.row_hash <> bronze.row_hash          -- changed record' END;\n\n-- Query from staging and apply datatypes\nSET @Query = N' \nCREATE EXTERNAL TABLE bronze.'+ @SourceConnectionName +'_'+ @TableName +'_' + REPLACE(@LoadDate, '-', '_') + '\nWITH (\n    LOCATION = ''' + @Location + ''',\n    DATA_SOURCE = Bronze,\n    FILE_FORMAT = ParquetFormat\n)\nAS\nSELECT hashed.* FROM (\nSELECT '\n+ @ColumnTypeList +\n', HASHBYTES(''SHA2_256'',\n        CONCAT_WS(''|'','+ @columnList +')\n    ) AS row_hash\n, getdate() AS bronze_watermark\nFROM OPENROWSET(\n    BULK ''' + @Location + '*.parquet'',\n    DATA_SOURCE = ''landingzone'',\n    FORMAT = ''PARQUET''\n) AS lz) AS hashed' + @hashcompare;\n\nEXEC sp_executesql @Query;\n\n",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "POC_test",
+				"poolName": "Built-in"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}

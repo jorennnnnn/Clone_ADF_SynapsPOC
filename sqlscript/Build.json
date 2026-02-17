@@ -1,0 +1,17 @@
+{
+	"name": "Build",
+	"properties": {
+		"content": {
+			"query": "BEGIN TRY\n    -- Create External Data Source for landingzone\n    IF NOT EXISTS (SELECT * FROM sys.external_data_sources WHERE name = 'landingzone')\n    BEGIN\n        CREATE EXTERNAL DATA SOURCE [landingzone]\n        WITH (\n            LOCATION = 'https://wearebisynapsestorage.blob.core.windows.net/landingzone'\n        );\n        PRINT 'External data source [landingzone] created successfully.';\n    END\n    ELSE\n    BEGIN\n        PRINT 'External data source [landingzone] already exists.';\n    END\n\n    -- Create External Data Source for bronze\n    IF NOT EXISTS (SELECT * FROM sys.external_data_sources WHERE name = 'bronze')\n    BEGIN\n        CREATE EXTERNAL DATA SOURCE [bronze]\n        WITH (\n            LOCATION = 'https://wearebisynapsestorage.blob.core.windows.net/bronze'\n        );\n        PRINT 'External data source [bronze] created successfully.';\n    END\n    ELSE\n    BEGIN\n        PRINT 'External data source [bronze] already exists.';\n    END\n\n    -- Create External Data Source for silver\n    IF NOT EXISTS (SELECT * FROM sys.external_data_sources WHERE name = 'silver')\n    BEGIN\n        CREATE EXTERNAL DATA SOURCE [silver]\n        WITH (\n            LOCATION = 'https://wearebisynapsestorage.blob.core.windows.net/silver'\n        );\n        PRINT 'External data source [silver] created successfully.';\n    END\n    ELSE\n    BEGIN\n        PRINT 'External data source [silver] already exists.';\n    END\n\n    -- Create External Data Source for gold\n    IF NOT EXISTS (SELECT * FROM sys.external_data_sources WHERE name = 'gold')\n    BEGIN\n        CREATE EXTERNAL DATA SOURCE [gold]\n        WITH (\n            LOCATION = 'https://wearebisynapsestorage.blob.core.windows.net/gold'\n        );\n        PRINT 'External data source [gold] created successfully.';\n    END\n    ELSE\n    BEGIN\n        PRINT 'External data source [gold] already exists.';\n    END\n\n    -- Create External File Format\n    IF NOT EXISTS (SELECT * FROM sys.external_file_formats WHERE name = 'ParquetFormat')\n    BEGIN\n        CREATE EXTERNAL FILE FORMAT ParquetFormat\n        WITH (\n            FORMAT_TYPE = PARQUET\n        );\n        PRINT 'External file format [ParquetFormat] created successfully.';\n    END\n    ELSE\n    BEGIN\n        PRINT 'External file format [ParquetFormat] already exists.';\n    END\nEND TRY\nBEGIN CATCH\n    PRINT 'Error occurred: ' + ERROR_MESSAGE();\nEND CATCH\n",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "POC_test",
+				"poolName": "Built-in"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}

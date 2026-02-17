@@ -1,0 +1,17 @@
+{
+	"name": "SQL script 8",
+	"properties": {
+		"content": {
+			"query": "SELECT TOP (100) [CustomerKey]\n,[GeoAreaKey]\n,[StartDT]\n,[EndDT]\n,[Continent]\n,[Gender]\n,[Title]\n,[GivenName]\n,[MiddleInitial]\n,[Surname]\n,[StreetAddress]\n,[City]\n,[State]\n,[StateFull]\n,[ZipCode]\n,[Country]\n,[CountryFull]\n,[Birthday]\n,[Age]\n,[Occupation]\n,[Company]\n,[Vehicle]\n,[Latitude]\n,[Longitude]\n,[row_hash]\n,[bronze_watermark]\n,[rn]\n FROM [Bronze].[vw_contoso_customer]",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "POC_test",
+				"poolName": "Built-in"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}

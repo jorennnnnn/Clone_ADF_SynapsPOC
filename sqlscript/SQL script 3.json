@@ -1,0 +1,17 @@
+{
+	"name": "SQL script 3",
+	"properties": {
+		"content": {
+			"query": "SELECT *\nFROM OPENROWSET(\n    BULK 'https://wearebisynapsestorage.dfs.core.windows.net/landingzone/contoso/customer/',\n    FORMAT='PARQUET'\n) AS rows;",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "master",
+				"poolName": "Built-in"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}

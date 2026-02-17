@@ -1,0 +1,17 @@
+{
+	"name": "Customer view",
+	"properties": {
+		"content": {
+			"query": "CREATE OR ALTER VIEW Bronze.vw_contoso_customer\nAS\nSELECT *\nFROM (\n    SELECT \n        [CustomerKey],\n        [GeoAreaKey],\n        [StartDT],\n        [EndDT],\n        [Continent],\n        [Gender],\n        [Title],\n        [GivenName],\n        [MiddleInitial],\n        [Surname],\n        [StreetAddress],\n        [City],\n        [State],\n        [StateFull],\n        [ZipCode],\n        [Country],\n        [CountryFull],\n        [Birthday],\n        [Age],\n        [Occupation],\n        [Company],\n        [Vehicle],\n        [Latitude],\n        [Longitude],\n        [row_hash],\n        [bronze_watermark],\n        ROW_NUMBER() OVER (\n            PARTITION BY CustomerKey \n            ORDER BY [bronze_watermark] DESC\n        ) AS rn\n    FROM OPENROWSET(\n        BULK 'contoso/customer/*/*.parquet',\n        DATA_SOURCE = 'bronze',\n        FORMAT = 'PARQUET'\n    ) AS src  \n) AS t  \nWHERE rn = 1;\n",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "POC_test",
+				"poolName": "Built-in"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}
