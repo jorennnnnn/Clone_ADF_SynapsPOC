@@ -1,0 +1,14 @@
+{
+	"name": "ds_azuresql_control",
+	"properties": {
+		"description": "Azure SQL Database control/metadata store (ctrl schema). Used by Lookup, Script, and Stored Procedure activities to read source table configuration, watermarks, and write execution logs.",
+		"linkedServiceName": {
+			"referenceName": "ls_azuresql_metadata",
+			"type": "LinkedServiceReference"
+		},
+		"annotations": [],
+		"type": "AzureSqlTable",
+		"schema": [],
+		"typeProperties": {}
+	}
+}
