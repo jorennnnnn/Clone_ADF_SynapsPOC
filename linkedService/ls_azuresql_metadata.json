@@ -6,11 +6,7 @@
 		"annotations": [],
 		"type": "AzureSqlDatabase",
 		"typeProperties": {
-			"server": "synapsepocwearebi-sqldb.database.windows.net",
-			"database": "metadata",
-			"encrypt": "mandatory",
-			"trustServerCertificate": false,
-			"authenticationType": "SystemAssignedManagedIdentity"
+			"connectionString": "Server=tcp:synapsepocwearebi-sqldb.database.windows.net,1433;Initial Catalog=metadata;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;Authentication=Active Directory Managed Identity;"
 		},
 		"connectVia": {
 			"referenceName": "AutoResolveIntegrationRuntime",
