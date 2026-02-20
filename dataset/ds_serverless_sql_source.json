@@ -1,0 +1,14 @@
+{
+	"name": "ds_serverless_sql_source",
+	"properties": {
+		"description": "Serverless SQL pool source dataset. Used by Copy Activity as the source when reading data via OPENROWSET from the data lake. The actual query is always provided dynamically by the pipeline (sqlReaderQuery).",
+		"linkedServiceName": {
+			"referenceName": "AzureSynapseAnalytics1",
+			"type": "LinkedServiceReference"
+		},
+		"annotations": [],
+		"type": "AzureSqlDWTable",
+		"schema": [],
+		"typeProperties": {}
+	}
+}

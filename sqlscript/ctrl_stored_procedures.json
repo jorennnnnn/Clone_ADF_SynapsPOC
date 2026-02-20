@@ -1,0 +1,20 @@
+{
+	"name": "ctrl_stored_procedures",
+	"properties": {
+		"folder": {
+			"name": "metadata"
+		},
+		"content": {
+			"query": "-- ============================================================\n-- Helper stored procedures for the Medallion ELT Framework\n-- Run against the Azure SQL Database metadata store\n-- ============================================================\n\n-- ============================================================\n-- ctrl.usp_upsert_watermark\n-- Called at the end of a successful pipeline run to record\n-- the latest load date and optional high-watermark timestamp\n-- ============================================================\nCREATE OR ALTER PROCEDURE ctrl.usp_upsert_watermark\n    @SourceTableId   INT,\n    @LastLoadDate    DATE,\n    @LastWatermarkTS DATETIME2 = NULL\nAS\nBEGIN\n    SET NOCOUNT ON;\n    MERGE ctrl.Watermark AS tgt\n    USING (\n        SELECT\n            @SourceTableId   AS SourceTableId,\n            @LastLoadDate    AS LastLoadDate,\n            @LastWatermarkTS AS LastWatermarkTS\n    ) AS src\n        ON tgt.SourceTableId = src.SourceTableId\n    WHEN MATCHED THEN\n        UPDATE SET\n            LastLoadDate    = src.LastLoadDate,\n            LastWatermarkTS = src.LastWatermarkTS,\n            UpdatedDate     = GETDATE()\n    WHEN NOT MATCHED THEN\n        INSERT (SourceTableId, LastLoadDate, LastWatermarkTS)\n        VALUES (src.SourceTableId, src.LastLoadDate, src.LastWatermarkTS);\nEND;\nGO\n\n-- ============================================================\n-- ctrl.usp_log_execution_start\n-- Inserts a RUNNING row into PipelineExecution and returns\n-- the new ExecutionId so the pipeline can update it later.\n-- In Synapse pipelines, call via Lookup Activity (SELECT output).\n-- ============================================================\nCREATE OR ALTER PROCEDURE ctrl.usp_log_execution_start\n    @PipelineName        NVARCHAR(200),\n    @RunId               NVARCHAR(100),\n    @SourceTableId       INT            = NULL,\n    @SourceConnectionName NVARCHAR(200) = NULL,\n    @TableName           NVARCHAR(200)  = NULL,\n    @Layer               NVARCHAR(20),\n    @LoadDate            DATE           = NULL\nAS\nBEGIN\n    SET NOCOUNT ON;\n    INSERT INTO ctrl.PipelineExecution\n        (PipelineName, RunId, SourceTableId, SourceConnectionName, TableName, Layer, LoadDate, Status)\n    VALUES\n        (@PipelineName, @RunId, @SourceTableId, @SourceConnectionName, @TableName, @Layer, @LoadDate, 'RUNNING');\n    SELECT CAST(SCOPE_IDENTITY() AS INT) AS ExecutionId;\nEND;\nGO\n\n-- ============================================================\n-- ctrl.usp_log_execution_end\n-- Closes an execution row with final status, row counts, and\n-- any error message.  Called by both success and failure paths.\n-- ============================================================\nCREATE OR ALTER PROCEDURE ctrl.usp_log_execution_end\n    @RunId        NVARCHAR(100),\n    @Layer        NVARCHAR(20),\n    @Status       NVARCHAR(20),\n    @RowsRead     BIGINT         = NULL,\n    @RowsWritten  BIGINT         = NULL,\n    @ErrorMessage NVARCHAR(MAX)  = NULL\nAS\nBEGIN\n    SET NOCOUNT ON;\n    UPDATE ctrl.PipelineExecution\n    SET\n        EndTime      = GETDATE(),\n        Status       = @Status,\n        RowsRead     = @RowsRead,\n        RowsWritten  = @RowsWritten,\n        ErrorMessage = @ErrorMessage\n    WHERE RunId = @RunId\n      AND Layer = @Layer;\nEND;\nGO\n",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "metadata",
+				"poolName": "AzureSqlDatabase"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}

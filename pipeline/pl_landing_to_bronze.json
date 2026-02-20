@@ -1,0 +1,459 @@
+{
+	"name": "pl_landing_to_bronze",
+	"properties": {
+		"description": "Metadata-driven Copy Activity pipeline that loads one source table from the Landing zone into the Bronze zone.\n\nFor each table it:\n  1. Looks up the current watermark from ctrl.Watermark.\n  2. Logs a RUNNING execution row in ctrl.PipelineExecution.\n  3. Runs a Copy Activity whose SOURCE is a Serverless SQL OPENROWSET query that:\n       - Applies column-level type casting (schema enforcement)\n       - Computes SHA2_256 row_hash for change detection\n       - When LoadType=INCREMENTAL, LEFT JOINs the existing Bronze view to\n         emit only new and changed records\n  4. When DetectDeletes=true, runs a second Copy Activity that emits\n     records present in Bronze but absent from the current Landing file,\n     writing them back with IsDeleted=1.\n  5. Upserts ctrl.Watermark with the new load date.\n  6. Updates the execution log with SUCCESS or FAILED status.",
+		"activities": [
+			{
+				"name": "act_set_run_id",
+				"description": "Generate a unique run identifier for tracing this execution.",
+				"type": "SetVariable",
+				"dependsOn": [],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"variableName": "RunId",
+					"value": {
+						"value": "@guid()",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "act_set_load_date",
+				"description": "Set today's date as the partition load date (yyyy-MM-dd).",
+				"type": "SetVariable",
+				"dependsOn": [],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"variableName": "LoadDate",
+					"value": {
+						"value": "@formatDateTime(utcNow(), 'yyyy-MM-dd')",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "act_get_watermark",
+				"description": "Retrieve the last successful load watermark for this source table. Returns an empty string when no watermark exists yet (first run = full load).",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "act_set_load_date",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderQuery": {
+							"value": "@concat('SELECT ISNULL(CONVERT(NVARCHAR(30), MAX(LastWatermarkTS), 121), '''') AS WatermarkTS FROM ctrl.Watermark WHERE SourceTableId = ', string(pipeline().parameters.SourceTableId))",
+							"type": "Expression"
+						},
+						"queryTimeout": "00:02:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "ds_azuresql_control",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": true
+				}
+			},
+			{
+				"name": "act_set_watermark_ts",
+				"description": "Store the watermark in a variable for use in downstream query expressions.",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "act_get_watermark",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"variableName": "WatermarkTS",
+					"value": {
+						"value": "@activity('act_get_watermark').output.firstRow.WatermarkTS",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "act_log_start",
+				"description": "Insert a RUNNING execution record into ctrl.PipelineExecution.",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "act_set_run_id",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "act_set_watermark_ts",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderQuery": {
+							"value": "@concat('EXEC ctrl.usp_log_execution_start @PipelineName = ''pl_landing_to_bronze'', @RunId = ''', variables('RunId'), ''', @SourceTableId = ', string(pipeline().parameters.SourceTableId), ', @SourceConnectionName = ''', pipeline().parameters.SourceConnectionName, ''', @TableName = ''', pipeline().parameters.TableName, ''', @Layer = ''BRONZE'', @LoadDate = ''', variables('LoadDate'), '''')",
+							"type": "Expression"
+						},
+						"queryTimeout": "00:02:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "ds_azuresql_control",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": true
+				}
+			},
+			{
+				"name": "act_copy_inserts_updates",
+				"description": "Copy Activity: reads from Landing zone via Serverless SQL OPENROWSET, applies type casting and SHA2_256 row_hash computation, then writes typed Parquet to Bronze zone.\n\nWhen WatermarkTS is set (INCREMENTAL), the source query LEFT JOINs the Bronze view to emit only new and changed rows. When WatermarkTS is empty (first run / FULL load), all rows are copied.",
+				"type": "Copy",
+				"dependsOn": [
+					{
+						"activity": "act_log_start",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "1.00:00:00",
+					"retry": 2,
+					"retryIntervalInSeconds": 60,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"source": {
+						"type": "SqlDWSource",
+						"sqlReaderQuery": {
+							"value": "@concat(\n  if(not(empty(variables('WatermarkTS'))),\n    concat('SELECT hashed.* FROM ('),\n    ''\n  ),\n  'SELECT ',\n  pipeline().parameters.ColumnTypeList,\n  ', ''', variables('LoadDate'), ''' AS loaddate',\n  ', HASHBYTES(''SHA2_256'', CONCAT_WS(''|'', ', pipeline().parameters.ColumnList, ')) AS row_hash',\n  ', GETDATE() AS bronze_watermark',\n  ', CAST(NULL AS INT) AS IsDeleted',\n  ' FROM OPENROWSET(',\n  'BULK ''/', pipeline().parameters.SourceConnectionName, '/', pipeline().parameters.TableName,\n  '/loaddate=', variables('LoadDate'), '/*.parquet'',',\n  ' DATA_SOURCE = ''landingzone'', FORMAT = ''PARQUET'') lz',\n  if(not(empty(variables('WatermarkTS'))),\n    concat(\n      ') hashed LEFT JOIN bronze.vw_', pipeline().parameters.SourceConnectionName, '_', pipeline().parameters.TableName,\n      ' tgt ON hashed.[', pipeline().parameters.PrimaryKey, '] = tgt.[', pipeline().parameters.PrimaryKey, ']',\n      ' WHERE tgt.[', pipeline().parameters.PrimaryKey, '] IS NULL OR hashed.row_hash <> tgt.row_hash'\n    ),\n    ''\n  )\n)",
+							"type": "Expression"
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"sink": {
+						"type": "ParquetSink",
+						"storeSettings": {
+							"type": "AzureBlobFSWriteSettings"
+						},
+						"formatSettings": {
+							"type": "ParquetWriteSettings"
+						}
+					},
+					"enableStaging": false,
+					"translator": {
+						"type": "TabularTranslator",
+						"typeConversion": true,
+						"typeConversionSettings": {
+							"allowDataTruncation": true,
+							"treatBooleanAsNumber": false
+						}
+					}
+				},
+				"inputs": [
+					{
+						"referenceName": "ds_serverless_sql_source",
+						"type": "DatasetReference"
+					}
+				],
+				"outputs": [
+					{
+						"referenceName": "ds_adls_parquet_bronze",
+						"type": "DatasetReference",
+						"parameters": {
+							"folderPath": {
+								"value": "@concat(pipeline().parameters.SourceConnectionName, '/', pipeline().parameters.TableName, '/loaddate=', variables('LoadDate'))",
+								"type": "Expression"
+							}
+						}
+					}
+				]
+			},
+			{
+				"name": "act_if_detect_deletes",
+				"description": "When DetectDeletes=true and this is not the first load, run a second Copy Activity to capture records that were deleted from the source since the last run.",
+				"type": "IfCondition",
+				"dependsOn": [
+					{
+						"activity": "act_copy_inserts_updates",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"typeProperties": {
+					"expression": {
+						"value": "@and(pipeline().parameters.DetectDeletes, not(empty(variables('WatermarkTS'))))",
+						"type": "Expression"
+					},
+					"ifTrueActivities": [
+						{
+							"name": "act_copy_deletes",
+							"description": "Detect records present in Bronze but absent from the current Landing partition and re-emit them with IsDeleted=1.",
+							"type": "Copy",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "1.00:00:00",
+								"retry": 2,
+								"retryIntervalInSeconds": 60,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"typeProperties": {
+								"source": {
+									"type": "SqlDWSource",
+									"sqlReaderQuery": {
+										"value": "@concat(\n  'SELECT ', replace(pipeline().parameters.ColumnList, '[', 'tgt.['),\n  ', tgt.loaddate, tgt.row_hash, GETDATE() AS bronze_watermark, 1 AS IsDeleted',\n  ' FROM bronze.vw_', pipeline().parameters.SourceConnectionName, '_', pipeline().parameters.TableName, ' tgt',\n  ' LEFT JOIN (SELECT [', pipeline().parameters.PrimaryKey, ']',\n  ' FROM OPENROWSET(BULK ''/', pipeline().parameters.SourceConnectionName, '/', pipeline().parameters.TableName,\n  '/loaddate=', variables('LoadDate'), '/*.parquet'',',\n  ' DATA_SOURCE = ''landingzone'', FORMAT = ''PARQUET'') src) lz',\n  ' ON tgt.[', pipeline().parameters.PrimaryKey, '] = lz.[', pipeline().parameters.PrimaryKey, ']',\n  ' WHERE lz.[', pipeline().parameters.PrimaryKey, '] IS NULL AND tgt.IsDeleted = 0'\n)",
+										"type": "Expression"
+									},
+									"queryTimeout": "02:00:00",
+									"partitionOption": "None"
+								},
+								"sink": {
+									"type": "ParquetSink",
+									"storeSettings": {
+										"type": "AzureBlobFSWriteSettings"
+									},
+									"formatSettings": {
+										"type": "ParquetWriteSettings"
+									}
+								},
+								"enableStaging": false
+							},
+							"inputs": [
+								{
+									"referenceName": "ds_serverless_sql_source",
+									"type": "DatasetReference"
+								}
+							],
+							"outputs": [
+								{
+									"referenceName": "ds_adls_parquet_bronze",
+									"type": "DatasetReference",
+									"parameters": {
+										"folderPath": {
+											"value": "@concat(pipeline().parameters.SourceConnectionName, '/', pipeline().parameters.TableName, '/loaddate=', variables('LoadDate'))",
+											"type": "Expression"
+										}
+									}
+								}
+							]
+						}
+					]
+				}
+			},
+			{
+				"name": "act_upsert_watermark",
+				"description": "Update (or insert) the watermark row in ctrl.Watermark to record that this load date was processed successfully.",
+				"type": "Script",
+				"dependsOn": [
+					{
+						"activity": "act_if_detect_deletes",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_azuresql_metadata",
+					"type": "LinkedServiceReference"
+				},
+				"typeProperties": {
+					"scripts": [
+						{
+							"type": "NonQuery",
+							"text": {
+								"value": "@concat('EXEC ctrl.usp_upsert_watermark @SourceTableId = ', string(pipeline().parameters.SourceTableId), ', @LastLoadDate = ''', variables('LoadDate'), ''', @LastWatermarkTS = GETDATE()')",
+								"type": "Expression"
+							}
+						}
+					],
+					"logSettings": {
+						"enableReliableLogging": false
+					}
+				}
+			},
+			{
+				"name": "act_log_success",
+				"description": "Mark the execution log row as SUCCESS and record the rows written count.",
+				"type": "Script",
+				"dependsOn": [
+					{
+						"activity": "act_upsert_watermark",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_azuresql_metadata",
+					"type": "LinkedServiceReference"
+				},
+				"typeProperties": {
+					"scripts": [
+						{
+							"type": "NonQuery",
+							"text": {
+								"value": "@concat('EXEC ctrl.usp_log_execution_end @RunId = ''', variables('RunId'), ''', @Layer = ''BRONZE'', @Status = ''SUCCESS'', @RowsWritten = ', string(activity('act_copy_inserts_updates').output.rowsCopied))",
+								"type": "Expression"
+							}
+						}
+					],
+					"logSettings": {
+						"enableReliableLogging": false
+					}
+				}
+			},
+			{
+				"name": "act_log_failure",
+				"description": "On any upstream failure, mark the execution log row as FAILED with the error message.",
+				"type": "Script",
+				"dependsOn": [
+					{
+						"activity": "act_copy_inserts_updates",
+						"dependencyConditions": [
+							"Failed"
+						]
+					},
+					{
+						"activity": "act_if_detect_deletes",
+						"dependencyConditions": [
+							"Failed"
+						]
+					},
+					{
+						"activity": "act_upsert_watermark",
+						"dependencyConditions": [
+							"Failed"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_azuresql_metadata",
+					"type": "LinkedServiceReference"
+				},
+				"typeProperties": {
+					"scripts": [
+						{
+							"type": "NonQuery",
+							"text": {
+								"value": "@concat('EXEC ctrl.usp_log_execution_end @RunId = ''', variables('RunId'), ''', @Layer = ''BRONZE'', @Status = ''FAILED'', @ErrorMessage = ''', replace(concat(string(activity('act_copy_inserts_updates').error), string(activity('act_if_detect_deletes').error), string(activity('act_upsert_watermark').error)), '''', ''''''), '''')",
+								"type": "Expression"
+							}
+						}
+					],
+					"logSettings": {
+						"enableReliableLogging": false
+					}
+				}
+			}
+		],
+		"parameters": {
+			"SourceTableId": {
+				"type": "int",
+				"defaultValue": 0
+			},
+			"SourceConnectionName": {
+				"type": "string",
+				"defaultValue": ""
+			},
+			"TableName": {
+				"type": "string",
+				"defaultValue": ""
+			},
+			"PrimaryKey": {
+				"type": "string",
+				"defaultValue": ""
+			},
+			"ColumnList": {
+				"type": "string",
+				"defaultValue": ""
+			},
+			"ColumnTypeList": {
+				"type": "string",
+				"defaultValue": ""
+			},
+			"DetectDeletes": {
+				"type": "bool",
+				"defaultValue": false
+			},
+			"LoadType": {
+				"type": "string",
+				"defaultValue": "INCREMENTAL"
+			}
+		},
+		"variables": {
+			"RunId": {
+				"type": "String"
+			},
+			"LoadDate": {
+				"type": "String"
+			},
+			"WatermarkTS": {
+				"type": "String"
+			}
+		},
+		"folder": {
+			"name": "medallion"
+		},
+		"annotations": []
+	}
+}

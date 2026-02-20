@@ -1,0 +1,20 @@
+{
+	"name": "ls_azuresql_metadata",
+	"type": "Microsoft.Synapse/workspaces/linkedservices",
+	"properties": {
+		"description": "Azure SQL Database used as the metadata / control store for the medallion ELT framework (ctrl schema).",
+		"annotations": [],
+		"type": "AzureSqlDatabase",
+		"typeProperties": {
+			"server": "synapsepocwearebi-sqldb.database.windows.net",
+			"database": "metadata",
+			"encrypt": "mandatory",
+			"trustServerCertificate": false,
+			"authenticationType": "SystemAssignedManagedIdentity"
+		},
+		"connectVia": {
+			"referenceName": "AutoResolveIntegrationRuntime",
+			"type": "IntegrationRuntimeReference"
+		}
+	}
+}
