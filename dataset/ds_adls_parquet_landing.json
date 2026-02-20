@@ -1,0 +1,30 @@
+{
+	"name": "ds_adls_parquet_landing",
+	"properties": {
+		"description": "Parameterized Parquet dataset for the Landing zone on ADLS Gen2. Path: landing/{folderPath}",
+		"linkedServiceName": {
+			"referenceName": "AzureDataLakeStorage1",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"folderPath": {
+				"type": "string",
+				"defaultValue": "/"
+			}
+		},
+		"annotations": [],
+		"type": "Parquet",
+		"typeProperties": {
+			"location": {
+				"type": "AzureBlobFSLocation",
+				"folderPath": {
+					"value": "@dataset().folderPath",
+					"type": "Expression"
+				},
+				"fileSystem": "landingzone"
+			},
+			"compressionCodec": "snappy"
+		},
+		"schema": []
+	}
+}

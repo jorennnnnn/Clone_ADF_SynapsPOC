@@ -1,0 +1,293 @@
+{
+	"name": "pl_bronze_to_silver",
+	"properties": {
+		"description": "Metadata-driven Copy Activity pipeline that promotes one table from Bronze to Silver.\n\nFor each table it:\n  1. Logs a RUNNING execution row in ctrl.PipelineExecution.\n  2. Runs a Copy Activity whose SOURCE is a Serverless SQL query that:\n       - Reads the Bronze view (vw_{SourceConnection}_{TableName})\n       - Deduplicates by PrimaryKey using ROW_NUMBER(), keeping the\n         most recently watermarked row (latest bronze_watermark)\n       - Filters out soft-deleted rows (IsDeleted = 0 only)\n       - Optionally applies a custom SilverQuery from ctrl.SourceTable\n  3. Writes a single partitioned Parquet file to the Silver zone.\n  4. Updates the execution log with SUCCESS or FAILED status.",
+		"activities": [
+			{
+				"name": "act_set_run_id",
+				"description": "Generate a unique run identifier.",
+				"type": "SetVariable",
+				"dependsOn": [],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"variableName": "RunId",
+					"value": {
+						"value": "@guid()",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "act_set_load_date",
+				"description": "Set today's date as the partition key.",
+				"type": "SetVariable",
+				"dependsOn": [],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"variableName": "LoadDate",
+					"value": {
+						"value": "@formatDateTime(utcNow(), 'yyyy-MM-dd')",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "act_get_silver_query",
+				"description": "Fetch optional custom SilverQuery from ctrl.SourceTable. If null, the default dedup query will be used.",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "act_set_load_date",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderQuery": {
+							"value": "@concat('SELECT ISNULL(SilverQuery, '''') AS SilverQuery FROM ctrl.SourceTable WHERE SourceTableId = ', string(pipeline().parameters.SourceTableId))",
+							"type": "Expression"
+						},
+						"queryTimeout": "00:02:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "ds_azuresql_control",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": true
+				}
+			},
+			{
+				"name": "act_log_start",
+				"description": "Insert a RUNNING execution record into ctrl.PipelineExecution.",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "act_set_run_id",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "act_get_silver_query",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderQuery": {
+							"value": "@concat('EXEC ctrl.usp_log_execution_start @PipelineName = ''pl_bronze_to_silver'', @RunId = ''', variables('RunId'), ''', @SourceTableId = ', string(pipeline().parameters.SourceTableId), ', @SourceConnectionName = ''', pipeline().parameters.SourceConnectionName, ''', @TableName = ''', pipeline().parameters.TableName, ''', @Layer = ''SILVER'', @LoadDate = ''', variables('LoadDate'), '''')",
+							"type": "Expression"
+						},
+						"queryTimeout": "00:02:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "ds_azuresql_control",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": true
+				}
+			},
+			{
+				"name": "act_copy_bronze_to_silver",
+				"description": "Copy Activity: reads deduplicated, non-deleted records from Bronze via Serverless SQL and writes Parquet to Silver zone.\n\nDefault query performs ROW_NUMBER() dedup on PrimaryKey ordered by bronze_watermark DESC. A custom SilverQuery stored in ctrl.SourceTable.SilverQuery overrides the default when provided.",
+				"type": "Copy",
+				"dependsOn": [
+					{
+						"activity": "act_log_start",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "1.00:00:00",
+					"retry": 2,
+					"retryIntervalInSeconds": 60,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"source": {
+						"type": "SqlDWSource",
+						"sqlReaderQuery": {
+							"value": "@if(\n  not(empty(activity('act_get_silver_query').output.firstRow.SilverQuery)),\n  activity('act_get_silver_query').output.firstRow.SilverQuery,\n  concat(\n    'SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY [', pipeline().parameters.PrimaryKey, '] ORDER BY bronze_watermark DESC) AS _rn',\n    ' FROM bronze.vw_', pipeline().parameters.SourceConnectionName, '_', pipeline().parameters.TableName,\n    ' WHERE IsDeleted = 0 OR IsDeleted IS NULL) t WHERE _rn = 1'\n  )\n)",
+							"type": "Expression"
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"sink": {
+						"type": "ParquetSink",
+						"storeSettings": {
+							"type": "AzureBlobFSWriteSettings"
+						},
+						"formatSettings": {
+							"type": "ParquetWriteSettings"
+						}
+					},
+					"enableStaging": false,
+					"translator": {
+						"type": "TabularTranslator",
+						"typeConversion": true,
+						"typeConversionSettings": {
+							"allowDataTruncation": true,
+							"treatBooleanAsNumber": false
+						}
+					}
+				},
+				"inputs": [
+					{
+						"referenceName": "ds_serverless_sql_source",
+						"type": "DatasetReference"
+					}
+				],
+				"outputs": [
+					{
+						"referenceName": "ds_adls_parquet_silver",
+						"type": "DatasetReference",
+						"parameters": {
+							"folderPath": {
+								"value": "@concat(pipeline().parameters.SourceConnectionName, '/', pipeline().parameters.TableName, '/loaddate=', variables('LoadDate'))",
+								"type": "Expression"
+							}
+						}
+					}
+				]
+			},
+			{
+				"name": "act_log_success",
+				"description": "Mark the execution log row as SUCCESS.",
+				"type": "Script",
+				"dependsOn": [
+					{
+						"activity": "act_copy_bronze_to_silver",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_azuresql_metadata",
+					"type": "LinkedServiceReference"
+				},
+				"typeProperties": {
+					"scripts": [
+						{
+							"type": "NonQuery",
+							"text": {
+								"value": "@concat('EXEC ctrl.usp_log_execution_end @RunId = ''', variables('RunId'), ''', @Layer = ''SILVER'', @Status = ''SUCCESS'', @RowsWritten = ', string(activity('act_copy_bronze_to_silver').output.rowsCopied))",
+								"type": "Expression"
+							}
+						}
+					],
+					"logSettings": {
+						"enableReliableLogging": false
+					}
+				}
+			},
+			{
+				"name": "act_log_failure",
+				"description": "On any upstream failure, mark the execution log row as FAILED.",
+				"type": "Script",
+				"dependsOn": [
+					{
+						"activity": "act_copy_bronze_to_silver",
+						"dependencyConditions": [
+							"Failed"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_azuresql_metadata",
+					"type": "LinkedServiceReference"
+				},
+				"typeProperties": {
+					"scripts": [
+						{
+							"type": "NonQuery",
+							"text": {
+								"value": "@concat('EXEC ctrl.usp_log_execution_end @RunId = ''', variables('RunId'), ''', @Layer = ''SILVER'', @Status = ''FAILED'', @ErrorMessage = ''', replace(string(activity('act_copy_bronze_to_silver').error), '''', ''''''), '''')",
+								"type": "Expression"
+							}
+						}
+					],
+					"logSettings": {
+						"enableReliableLogging": false
+					}
+				}
+			}
+		],
+		"parameters": {
+			"SourceTableId": {
+				"type": "int",
+				"defaultValue": 0
+			},
+			"SourceConnectionName": {
+				"type": "string",
+				"defaultValue": ""
+			},
+			"TableName": {
+				"type": "string",
+				"defaultValue": ""
+			},
+			"PrimaryKey": {
+				"type": "string",
+				"defaultValue": ""
+			}
+		},
+		"variables": {
+			"RunId": {
+				"type": "String"
+			},
+			"LoadDate": {
+				"type": "String"
+			}
+		},
+		"folder": {
+			"name": "medallion"
+		},
+		"annotations": []
+	}
+}

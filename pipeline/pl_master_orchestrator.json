@@ -1,0 +1,219 @@
+{
+	"name": "pl_master_orchestrator",
+	"properties": {
+		"description": "Top-level metadata-driven orchestrator for the Medallion ELT framework.\n\nExecution flow:\n  1. Looks up all active source tables from ctrl.SourceTable.\n  2. ForEach table (configurable parallelism, default 5):\n     a. Always executes pl_landing_to_bronze.\n     b. When SilverEnabled=1, executes pl_bronze_to_silver after Bronze succeeds.\n     c. When GoldEnabled=1, executes pl_silver_to_gold after Silver succeeds.\n\nAll execution state, row counts, and errors are recorded in\nctrl.PipelineExecution via the child pipelines.",
+		"activities": [
+			{
+				"name": "act_lookup_active_tables",
+				"description": "Load all active source table configurations from the metadata store.",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.00:02:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderQuery": "SELECT\n    SourceTableId,\n    SourceConnectionName,\n    TableName,\n    PrimaryKey,\n    ColumnList,\n    ColumnTypeList,\n    LoadType,\n    DetectDeletes,\n    SilverEnabled,\n    GoldEnabled\nFROM ctrl.SourceTable\nWHERE IsActive = 1\nORDER BY SourceTableId;",
+						"queryTimeout": "00:02:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "ds_azuresql_control",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "act_foreach_table",
+				"description": "Process each active source table in parallel (up to 5 concurrent). Each iteration invokes Bronze, and conditionally Silver and Gold child pipelines.",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "act_lookup_active_tables",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('act_lookup_active_tables').output.value",
+						"type": "Expression"
+					},
+					"isSequential": false,
+					"batchCount": 5,
+					"activities": [
+						{
+							"name": "act_exec_landing_to_bronze",
+							"description": "Execute the Bronze ingestion pipeline for this table.",
+							"type": "ExecutePipeline",
+							"dependsOn": [],
+							"policy": {
+								"secureInput": false
+							},
+							"typeProperties": {
+								"pipeline": {
+									"referenceName": "pl_landing_to_bronze",
+									"type": "PipelineReference"
+								},
+								"waitOnCompletion": true,
+								"parameters": {
+									"SourceTableId": {
+										"value": "@item().SourceTableId",
+										"type": "Expression"
+									},
+									"SourceConnectionName": {
+										"value": "@item().SourceConnectionName",
+										"type": "Expression"
+									},
+									"TableName": {
+										"value": "@item().TableName",
+										"type": "Expression"
+									},
+									"PrimaryKey": {
+										"value": "@item().PrimaryKey",
+										"type": "Expression"
+									},
+									"ColumnList": {
+										"value": "@item().ColumnList",
+										"type": "Expression"
+									},
+									"ColumnTypeList": {
+										"value": "@item().ColumnTypeList",
+										"type": "Expression"
+									},
+									"DetectDeletes": {
+										"value": "@bool(item().DetectDeletes)",
+										"type": "Expression"
+									},
+									"LoadType": {
+										"value": "@item().LoadType",
+										"type": "Expression"
+									}
+								}
+							}
+						},
+						{
+							"name": "act_if_silver_enabled",
+							"description": "Only promote to Silver when SilverEnabled=1 and Bronze succeeded.",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "act_exec_landing_to_bronze",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"typeProperties": {
+								"expression": {
+									"value": "@equals(item().SilverEnabled, 1)",
+									"type": "Expression"
+								},
+								"ifTrueActivities": [
+									{
+										"name": "act_exec_bronze_to_silver",
+										"description": "Execute the Silver promotion pipeline for this table.",
+										"type": "ExecutePipeline",
+										"dependsOn": [],
+										"policy": {
+											"secureInput": false
+										},
+										"typeProperties": {
+											"pipeline": {
+												"referenceName": "pl_bronze_to_silver",
+												"type": "PipelineReference"
+											},
+											"waitOnCompletion": true,
+											"parameters": {
+												"SourceTableId": {
+													"value": "@item().SourceTableId",
+													"type": "Expression"
+												},
+												"SourceConnectionName": {
+													"value": "@item().SourceConnectionName",
+													"type": "Expression"
+												},
+												"TableName": {
+													"value": "@item().TableName",
+													"type": "Expression"
+												},
+												"PrimaryKey": {
+													"value": "@item().PrimaryKey",
+													"type": "Expression"
+												}
+											}
+										}
+									}
+								]
+							}
+						},
+						{
+							"name": "act_if_gold_enabled",
+							"description": "Only promote to Gold when GoldEnabled=1 and Silver succeeded (or Silver was skipped and Bronze succeeded).",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "act_if_silver_enabled",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"typeProperties": {
+								"expression": {
+									"value": "@equals(item().GoldEnabled, 1)",
+									"type": "Expression"
+								},
+								"ifTrueActivities": [
+									{
+										"name": "act_exec_silver_to_gold",
+										"description": "Execute the Gold promotion pipeline for this table.",
+										"type": "ExecutePipeline",
+										"dependsOn": [],
+										"policy": {
+											"secureInput": false
+										},
+										"typeProperties": {
+											"pipeline": {
+												"referenceName": "pl_silver_to_gold",
+												"type": "PipelineReference"
+											},
+											"waitOnCompletion": true,
+											"parameters": {
+												"SourceTableId": {
+													"value": "@item().SourceTableId",
+													"type": "Expression"
+												},
+												"SourceConnectionName": {
+													"value": "@item().SourceConnectionName",
+													"type": "Expression"
+												},
+												"TableName": {
+													"value": "@item().TableName",
+													"type": "Expression"
+												}
+											}
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			}
+		],
+		"parameters": {},
+		"variables": {},
+		"folder": {
+			"name": "medallion"
+		},
+		"annotations": []
+	}
+}
