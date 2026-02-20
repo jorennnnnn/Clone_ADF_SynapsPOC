@@ -5,11 +5,7 @@
 		"annotations": [],
 		"type": "AzureSqlDW",
 		"typeProperties": {
-			"server": "synapsepocwearebi-ondemand.sql.azuresynapse.net",
-			"database": "POC_test",
-			"encrypt": "optional",
-			"trustServerCertificate": false,
-			"authenticationType": "SystemAssignedManagedIdentity"
+			"connectionString": "Server=tcp:synapsepocwearebi-ondemand.sql.azuresynapse.net,1433;Initial Catalog=POC_test;Encrypt=Optional;TrustServerCertificate=False;Connection Timeout=30;Authentication=Active Directory Managed Identity;"
 		},
 		"connectVia": {
 			"referenceName": "AutoResolveIntegrationRuntime",
